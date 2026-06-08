@@ -1,0 +1,1181 @@
+STEP1-STEP6
+
+-- DATA BASE SETUP
+-- CREATE EXTENSION IF NOT EXISTS postgis;
+-- CREATE EXTENSION IF NOT EXISTS postgis_raster;
+-- CREATE EXTENSION postgis_topology;
+
+-- SELECT current_user;
+-- SELECT postgis_version();
+-- SELECT postgis_full_version();
+
+-- FOR CHECK RASTER PROPERTIES
+
+-- SELECT COUNT(*)
+-- FROM public.demm;
+-- SELECT rid,
+--        ST_Width(rast) AS width,
+--        ST_Height(rast) AS height
+-- FROM public.demm
+-- LIMIT 5;
+-- CRS CHECKIN
+
+-- SELECT ST_SRID(rast)
+-- FROM public.demm
+-- LIMIT 1;
+-- SELECT ST_AsText(ST_Envelope(rast))
+-- FROM public.demm
+-- LIMIT 1;
+-- SELECT COUNT(*)
+-- FROM public.slope;
+-- CREATE TABLE
+-- DROP TABLE IF EXISTS public.lst_monthly_stats;
+
+-- CREATE TABLE public.lst_monthly_stats (
+--     id         SERIAL PRIMARY KEY,
+--     year       INTEGER,
+--     month      NUMERIC,
+--     date_start DATE,
+--     lst_mean   DOUBLE PRECISION,
+--     lst_min    DOUBLE PRECISION,
+--     lst_max    DOUBLE PRECISION,
+--     lst_stddev DOUBLE PRECISION
+-- );
+
+-- INSERT INTO public.lst_monthly_stats 
+--     (year, month, date_start, lst_mean, lst_min, lst_max, lst_stddev)
+-- VALUES
+-- (2025, 1,  '2025-01-01', 23.116351130054493, 13.610000000000014, 28.480000000000032, 2.1681073579677204),
+-- (2025, 2,  '2025-02-01', 25.76190353117857,   9.203333333333356, 32.33000000000004,  2.5052518612160073),
+-- (2025, 3,  '2025-03-01', 34.57772036482364,  23.650000000000034, 40.645000000000024, 2.6293437307150875),
+-- (2025, 4,  '2025-04-01', 40.12318868516719,  27.590000000000032, 45.34333333333336,  1.7596883050841792),
+-- (2025, 5,  '2025-05-01', 44.13376225760285,  32.99500000000003,  48.660000000000025, 1.420784067561221),
+-- (2025, 6,  '2025-06-01', 44.944354934095685, 34.98333333333337,  49.32000000000002,  1.0020643249708383),
+-- (2025, 7,  '2025-07-01', 45.6120832730249,   33.800000000000054, 50.51500000000004,  1.0397003688279756),
+-- (2025, 8,  '2025-08-01', 44.986001534566746, 35.23000000000002,  48.58000000000003,  1.09681743484034),
+-- (2025, 9,  '2025-09-01', 42.033532428952824, 33.630000000000024, 46.39500000000004,  1.4428034629130235),
+-- (2025, 10, '2025-10-01', 36.545374325444,    29.570000000000032, 41.24333333333336,  1.6405966588058234),
+-- (2025, 11, '2025-11-01', 28.71173249659922,  22.80500000000002,  33.60500000000003,  1.4369166805425169),
+-- (2025, 12, '2025-12-01', 23.54921235065422,  13.630000000000052, 28.470000000000027, 2.545807188995643);
+
+-- SELECT * FROM public.lst_monthly_stats ORDER BY month;
+-- -- CHECK OUR FINDED EPSG IS CORRECT
+-- SELECT srtext FROM spatial_ref_sys WHERE srid = 32638;
+-- FROM QGIS WE CONNECT VECTOR LAYERS
+-- FROM OSGEO4W WE CONNECT RASTER LAYERS
+-- TABLES WE CREATED
+-- -----------------------------------------------------
+-- 1. VECTOR: Al_Ahsa Boundary
+-- -----------------------------------------------------
+-- ALTER TABLE public."Al_Ahsa" 
+--     ADD COLUMN geom_utm geometry(MultiPolygon, 32638);
+
+-- UPDATE public."Al_Ahsa" 
+--     SET geom_utm = ST_Transform(geom, 32638);
+
+-- CREATE INDEX idx_alahsa_utm 
+--     ON public."Al_Ahsa" USING GIST(geom_utm);
+
+-- -----------------------------------------------------
+-- 2. VECTOR: OSM Roads
+-- -----------------------------------------------------
+-- ALTER TABLE public.road 
+--     ADD COLUMN geom_utm geometry(MultiLineString, 32638);
+
+-- UPDATE public.road 
+--     SET geom_utm = ST_Transform(geom, 32638);
+
+-- CREATE INDEX idx_road_utm 
+--     ON public.road USING GIST(geom_utm);
+
+-- -----------------------------------------------------
+-- 3. VECTOR: OSM Buildings
+-- -----------------------------------------------------
+-- ALTER TABLE public.buiid 
+--     ADD COLUMN geom_utm geometry(MultiPolygon, 32638);
+
+-- UPDATE public.buiid 
+--     SET geom_utm = ST_Transform(geom, 32638);
+
+-- CREATE INDEX idx_buiid_utm 
+--     ON public.buiid USING GIST(geom_utm);
+-- -----------------------------------------------------
+-- 4. RASTER: LULC
+-- -----------------------------------------------------
+-- ALTER TABLE public.lulc ADD COLUMN rast_utm raster;
+
+-- UPDATE public.lulc 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_lulc_utm 
+--     ON public.lulc USING GIST(ST_ConvexHull(rast_utm));
+-- -----------------------------------------------------
+-- 5. RASTER: Population
+-- -- -----------------------------------------------------
+-- ALTER TABLE public.pop ADD COLUMN rast_utm raster;
+
+-- UPDATE public.pop 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_pop_utm 
+--     ON public.pop USING GIST(ST_ConvexHull(rast_utm));
+-- -----------------------------------------------------
+-- 6. RASTER: DEM
+-- -----------------------------------------------------
+-- ALTER TABLE public.demm ADD COLUMN rast_utm raster;
+
+-- UPDATE public.demm 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_demm_utm 
+--     ON public.demm USING GIST(ST_ConvexHull(rast_utm));
+-- -----------------------------------------------------
+-- 7. RASTER: NDVI
+-- -----------------------------------------------------
+-- ALTER TABLE public.ndvi ADD COLUMN rast_utm raster;
+
+-- UPDATE public.ndvi 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_ndvi_utm 
+--     ON public.ndvi USING GIST(ST_ConvexHull(rast_utm));
+-- -----------------------------------------------------
+-- 8. RASTER: Slope
+-- -----------------------------------------------------
+-- ALTER TABLE public.slope ADD COLUMN rast_utm raster;
+
+-- UPDATE public.slope 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_slope_utm 
+--     ON public.slope USING GIST(ST_ConvexHull(rast_utm));
+
+-- -----------------------------------------------------
+-- 9. RASTER: Aspect
+-- -----------------------------------------------------
+-- ALTER TABLE public.aspect ADD COLUMN rast_utm raster;
+
+-- UPDATE public.aspect 
+--     SET rast_utm = ST_Transform(rast, 32638);
+
+-- CREATE INDEX idx_aspect_utm 
+--     ON public.aspect USING GIST(ST_ConvexHull(rast_utm));
+
+-- -----------------------------------------------------
+-- 10. CREATE STUDY MASK from Al_Ahsa boundary
+-- -----------------------------------------------------
+-- CREATE TABLE public.study_mask AS
+-- SELECT ST_Union(geom_utm) AS geom
+-- FROM public."Al_Ahsa";
+
+-- CREATE INDEX idx_study_mask 
+--     ON public.study_mask USING GIST(geom);
+-- =====================================================
+-- FINAL VERIFICATION
+-- =====================================================
+-- SELECT 'Al_Ahsa'      AS layer, MAX(ST_SRID(geom_utm)) AS srid, COUNT(*) AS rows, 'Vector' AS type FROM public."Al_Ahsa"
+-- UNION ALL
+-- SELECT 'road',        MAX(ST_SRID(geom_utm)), COUNT(*), 'Vector' FROM public.road
+-- UNION ALL
+-- SELECT 'buiid',    MAX(ST_SRID(geom_utm)), COUNT(*), 'Vector' FROM public.buiid
+-- UNION ALL
+-- SELECT 'lulc',             MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.lulc
+-- UNION ALL
+-- SELECT 'pop',              MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.pop
+-- UNION ALL
+-- SELECT 'demm',              MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.demm
+-- UNION ALL
+-- SELECT 'ndvi',             MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.ndvi
+-- UNION ALL
+-- SELECT 'slope',            MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.slope
+-- UNION ALL
+-- SELECT 'aspect',           MAX(ST_SRID(rast_utm)), COUNT(*), 'Raster' FROM public.aspect;
+
+-- STEP-4
+-- =====================================================
+-- STEP 4: CLIP ALL LAYERS TO AL-AHSA STUDY AREA
+-- Table names: road, buiid, Al_Ahsa, aspect, demm,
+--              slope, lulc, ndvi, pop, lst_monthly_stats
+-- =====================================================
+
+-- -----------------------------------------------------
+-- 0. RECREATE STUDY MASK from Al_Ahsa boundary
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.study_mask;
+
+-- CREATE TABLE public.study_mask AS
+-- SELECT ST_Union(geom_utm) AS geom
+-- FROM public."Al_Ahsa";
+
+-- CREATE INDEX idx_study_mask
+--     ON public.study_mask USING GIST(geom);
+	
+
+-- Check study mask
+-- SELECT 
+--     ST_SRID(geom)                                    AS srid,
+--     ROUND((ST_Area(geom) / 1000000)::numeric, 2)     AS area_km2
+-- FROM public.study_mask;
+
+-- -- Check centroid falls inside Al-Ahsa
+-- SELECT ST_AsText(ST_Centroid(geom)) AS centroid_utm
+-- FROM public.study_mask;
+-- =====================================================
+-- STEP 4: CLIP ALL LAYERS TO AL-AHSA STUDY AREA
+-- =====================================================
+
+-- -----------------------------------------------------
+-- 1. VECTOR: Roads (table name: road)
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.road_clip;
+
+-- CREATE TABLE public.road_clip AS
+-- SELECT 
+--     r.*,
+--     ST_Intersection(r.geom_utm, m.geom) AS geom_clip
+-- FROM public.road r, public.study_mask m
+-- WHERE ST_Intersects(r.geom_utm, m.geom);
+
+-- CREATE INDEX idx_road_clip
+--     ON public.road_clip USING GIST(geom_clip);
+
+-- -- Verify
+-- SELECT 
+--     COUNT(*) AS road_count,
+--     ROUND((SUM(ST_Length(geom_clip)))::numeric, 2) AS total_length_m
+-- FROM public.road_clip;
+
+-- -----------------------------------------------------
+-- 2. VECTOR: Buildings (table name: buiid)
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.buiid_clip;
+
+-- CREATE TABLE public.buiid_clip AS
+-- SELECT 
+--     b.*,
+--     ST_Intersection(b.geom_utm, m.geom) AS geom_clip
+-- FROM public.buiid b, public.study_mask m
+-- WHERE ST_Intersects(b.geom_utm, m.geom);
+
+-- CREATE INDEX idx_buiid_clip
+--     ON public.buiid_clip USING GIST(geom_clip);
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS building_count,
+--     ROUND((SUM(ST_Area(geom_clip)))::numeric, 2) AS total_area_m2
+-- FROM public.buiid_clip;
+
+-- -----------------------------------------------------
+-- 3. RASTER: LULC
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_clip;
+
+-- CREATE TABLE public.lulc_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.lulc r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_lulc_clip
+--     ON public.lulc_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.lulc_clip;
+
+-- -----------------------------------------------------
+-- 4. RASTER: Population (table name: pop)
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.pop_clip;
+
+-- CREATE TABLE public.pop_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.pop r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_pop_clip
+--     ON public.pop_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.pop_clip;
+
+-- -----------------------------------------------------
+-- 5. RASTER: DEM (table name: demm)
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.demm_clip;
+
+-- CREATE TABLE public.demm_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.demm r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_demm_clip
+--     ON public.demm_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.demm_clip;
+
+-- -----------------------------------------------------
+-- 6. RASTER: NDVI
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.ndvi_clip;
+
+-- CREATE TABLE public.ndvi_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.ndvi r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_ndvi_clip
+--     ON public.ndvi_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.ndvi_clip;
+
+-- -----------------------------------------------------
+-- 7. RASTER: Slope
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.slope_clip;
+
+-- CREATE TABLE public.slope_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.slope r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_slope_clip
+--     ON public.slope_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.slope_clip;
+
+-- -----------------------------------------------------
+-- 8. RASTER: Aspect
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.aspect_clip;
+
+-- CREATE TABLE public.aspect_clip AS
+-- SELECT 
+--     ST_Clip(r.rast_utm, m.geom, TRUE) AS rast
+-- FROM public.aspect r, public.study_mask m
+-- WHERE ST_Intersects(r.rast_utm, m.geom);
+
+-- CREATE INDEX idx_aspect_clip
+--     ON public.aspect_clip USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     COUNT(*) AS tile_count,
+--     MAX(ST_SRID(rast)) AS srid
+-- FROM public.aspect_clip;
+
+-- =====================================================
+-- FINAL VERIFICATION — ALL CLIPPED LAYERS SUMMARY
+-- =====================================================
+-- SELECT 'road_clip'         AS layer, COUNT(*) AS rows, 'Vector - Line'    AS type FROM public.road_clip
+-- UNION ALL
+-- SELECT 'buiid_clip',                 COUNT(*), 'Vector - Polygon'          FROM public.buiid_clip
+-- UNION ALL
+-- SELECT 'lulc_clip',                  COUNT(*), 'Raster'                    FROM public.lulc_clip
+-- UNION ALL
+-- SELECT 'pop_clip',                   COUNT(*), 'Raster'                    FROM public.pop_clip
+-- UNION ALL
+-- SELECT 'demm_clip',                  COUNT(*), 'Raster'                    FROM public.demm_clip
+-- UNION ALL
+-- SELECT 'ndvi_clip',                  COUNT(*), 'Raster'                    FROM public.ndvi_clip
+-- UNION ALL
+-- SELECT 'slope_clip',                 COUNT(*), 'Raster'                    FROM public.slope_clip
+-- UNION ALL
+-- SELECT 'aspect_clip',                COUNT(*), 'Raster'                    FROM public.aspect_clip
+-- UNION ALL
+-- SELECT 'lst_monthly_stats',          COUNT(*), 'Stats Table'               FROM public.lst_monthly_stats;
+
+
+-- =====================================================
+-- STEP 5: RESAMPLE ALL RASTERS TO COMMON 100m GRID
+-- Reference grid: lulc_clip (most detailed layer)
+-- All outputs: 100m pixel size in UTM 32638
+-- =====================================================
+
+-- -----------------------------------------------------
+-- 0. CREATE REFERENCE 100m GRID from lulc_clip
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.ref_grid_100m;
+
+-- CREATE TABLE public.ref_grid_100m AS
+-- SELECT ST_Union(
+--     ST_AsRaster(
+--         geom,           -- study mask geometry
+--         100,            -- pixel width  = 100m
+--         100,            -- pixel height = 100m
+--         '32BF',         -- 32-bit float
+--         0,              -- initial value
+--         -9999           -- nodata value
+--     )
+-- ) AS rast
+-- FROM public.study_mask;
+
+-- Verify reference grid
+-- SELECT 
+--     ST_SRID(rast)                    AS srid,
+--     (ST_MetaData(rast)).width        AS grid_width_px,
+--     (ST_MetaData(rast)).height       AS grid_height_px,
+--     (ST_MetaData(rast)).scalex       AS pixel_size_x_m,
+--     (ST_MetaData(rast)).scaley       AS pixel_size_y_m
+-- FROM public.ref_grid_100m;
+
+-- =====================================================
+-- RESAMPLE EACH RASTER TO 100m GRID
+-- =====================================================
+
+-- -----------------------------------------------------
+-- 1. LULC — resample to 100m
+-- (original: 10m GEE output)
+-- Use: NearestNeighbour for categorical data
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_100m;
+
+-- CREATE TABLE public.lulc_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'NearestNeighbour'   -- preserve class values
+--     ) AS rast
+-- FROM public.lulc_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_lulc_100m
+--     ON public.lulc_100m USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     'lulc_100m'                          AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.lulc_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -----------------------------------------------------
+-- 2. POPULATION — resample to 100m
+-- (original: 100m WorldPop — already 100m)
+-- Use: Bilinear for smooth continuous values
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.pop_100m;
+
+-- CREATE TABLE public.pop_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'Bilinear'
+--     ) AS rast
+-- FROM public.pop_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_pop_100m
+--     ON public.pop_100m USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     'pop_100m'                           AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.pop_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -----------------------------------------------------
+-- 3. DEM — resample to 100m
+-- (original: 30m SRTM)
+-- Use: Bilinear for smooth elevation surface
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.demm_100m;
+
+-- CREATE TABLE public.demm_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'Bilinear'
+--     ) AS rast
+-- FROM public.demm_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_demm_100m
+--     ON public.demm_100m USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     'demm_100m'                          AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.demm_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -----------------------------------------------------
+-- 4. NDVI — resample to 100m
+-- (original: 30m GEE output)
+-- Use: Bilinear for smooth vegetation index
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.ndvi_100m;
+
+-- CREATE TABLE public.ndvi_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'Bilinear'
+--     ) AS rast
+-- FROM public.ndvi_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_ndvi_100m
+--     ON public.ndvi_100m USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     'ndvi_100m'                          AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.ndvi_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -----------------------------------------------------
+-- 5. SLOPE — resample to 100m
+-- (original: 30m QGIS derived)
+-- Use: Bilinear for smooth slope surface
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.slope_100m;
+
+-- CREATE TABLE public.slope_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'Bilinear'
+--     ) AS rast
+-- FROM public.slope_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_slope_100m
+--     ON public.slope_100m USING GIST(ST_ConvexHull(rast));
+
+-- Verify
+-- SELECT 
+--     'slope_100m'                         AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.slope_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -----------------------------------------------------
+-- 6. ASPECT — resample to 100m
+-- (original: 30m QGIS derived)
+-- Use: NearestNeighbour for directional data
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.aspect_100m;
+
+-- CREATE TABLE public.aspect_100m AS
+-- SELECT 
+--     ST_Resample(
+--         c.rast,
+--         r.rast,
+--         'NearestNeighbour'
+--     ) AS rast
+-- FROM public.aspect_clip c, public.ref_grid_100m r;
+
+-- CREATE INDEX idx_aspect_100m
+--     ON public.aspect_100m USING GIST(ST_ConvexHull(rast));
+
+-- -- Verify
+-- SELECT 
+--     'aspect_100m'                        AS layer,
+--     MAX(ST_SRID(rast))                   AS srid,
+--     (ST_MetaData(rast)).scalex           AS pixel_size_m,
+--     COUNT(*)                             AS tile_count
+-- FROM public.aspect_100m
+-- GROUP BY (ST_MetaData(rast)).scalex;
+
+-- -- -----------------------------------------------------
+-- -- 7. LST — build 100m raster from monthly stats
+-- -- Fixed version using ST_AddBand + ST_SetBandNoDataValue
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lst_100m;
+
+-- -- Step 1: Get summer mean value first
+-- DO $$
+-- DECLARE
+--     summer_mean DOUBLE PRECISION;
+-- BEGIN
+--     SELECT ROUND(AVG(lst_mean)::numeric, 4)
+--     INTO summer_mean
+--     FROM public.lst_monthly_stats
+--     WHERE month IN (6, 7, 8);
+
+--     RAISE NOTICE 'Summer mean LST = %', summer_mean;
+-- END $$;
+
+-- -- Step 2: Create LST raster filled with summer mean value
+-- CREATE TABLE public.lst_100m AS
+-- WITH summer_lst AS (
+--     SELECT ROUND(AVG(lst_mean)::numeric, 4) AS mean_val
+--     FROM public.lst_monthly_stats
+--     WHERE month IN (6, 7, 8)
+-- )
+-- SELECT
+--     ST_AddBand(
+--         ST_MakeEmptyRaster(r.rast),  -- copy grid structure
+--         '32BF'::text,                -- 32-bit float band
+--         s.mean_val,                  -- fill value = summer mean LST
+--         -9999                        -- nodata value
+--     ) AS rast
+-- FROM public.ref_grid_100m r,
+--      summer_lst s;
+
+-- -- Add spatial index
+-- CREATE INDEX idx_lst_100m
+--     ON public.lst_100m USING GIST(ST_ConvexHull(rast));
+-- -- Verify
+-- SELECT
+--     'lst_100m'                                            AS layer,
+--     MAX(ST_SRID(rast))                                    AS srid,
+--     COUNT(*)                                              AS tile_count,
+--     ROUND(AVG(
+--         ST_Value(rast, 1, ST_Centroid(ST_ConvexHull(rast)))
+--     )::numeric, 2)                                        AS assigned_lst_celsius
+-- FROM public.lst_100m;
+
+
+-- -- =====================================================
+-- -- FINAL VERIFICATION — ALL 100m LAYERS
+-- -- =====================================================
+-- SELECT 
+--     'lulc_100m'    AS layer,
+--     MAX(ST_SRID(rast))            AS srid,
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1) AS pixel_m,
+--     COUNT(*)                      AS tiles
+-- FROM public.lulc_100m   GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'pop_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.pop_100m    GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'demm_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.demm_100m   GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'ndvi_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.ndvi_100m   GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'slope_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.slope_100m  GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'aspect_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.aspect_100m GROUP BY (ST_MetaData(rast)).scalex
+
+-- UNION ALL
+-- SELECT 
+--     'lst_100m',
+--     MAX(ST_SRID(rast)),
+--     ROUND((ST_MetaData(rast)).scalex::numeric, 1),
+--     COUNT(*)
+-- FROM public.lst_100m    GROUP BY (ST_MetaData(rast)).scalex;
+
+-- =====================================================
+-- STEP 6: LULC ZONE CLASSIFICATION
+-- Class values from GEE export:
+-- 0 = Built-up
+-- 1 = Natural Vegetation
+-- 2 = Bare Land
+-- 3 = Oasis Agriculture
+-- 4 = Industry
+-- 5 = Water Bodies
+-- =====================================================
+
+-- -- -----------------------------------------------------
+-- -- 1. CREATE LULC CLASS LOOKUP TABLE
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_classes;
+
+-- CREATE TABLE public.lulc_classes (
+--     class_id      INTEGER PRIMARY KEY,
+--     class_name    TEXT,
+--     class_desc    TEXT,
+--     heat_weight   NUMERIC,   -- heat contribution weight for HEI
+--     is_urban      BOOLEAN,
+--     color_hex     TEXT        -- for visualization
+-- );
+
+-- INSERT INTO public.lulc_classes VALUES
+-- (0, 'Built-up',            'Urban buildings and impervious surfaces', 1.0,  TRUE,  '#FF4444'),
+-- (1, 'Natural Vegetation',  'Shrubs, grasses, natural green cover',    0.1,  FALSE, '#33AA33'),
+-- (2, 'Bare Land',           'Desert, sand, exposed soil',              0.7,  FALSE, '#DDBB77'),
+-- (3, 'Oasis Agriculture',   'Palm groves and irrigated farmland',      0.2,  FALSE, '#66CC66'),
+-- (4, 'Industry',            'Industrial zones and infrastructure',     0.9,  TRUE,  '#AA4400'),
+-- (5, 'Water Bodies',        'Lakes, ponds, irrigation canals',         0.0,  FALSE, '#4499FF');
+
+-- -- Verify lookup table
+-- SELECT * FROM public.lulc_classes ORDER BY class_id;
+
+-- -- -----------------------------------------------------
+-- -- 2. EXTRACT PIXEL VALUES FROM LULC 100m RASTER
+-- --    Convert raster to point vector table
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_pixels;
+
+-- CREATE TABLE public.lulc_pixels AS
+-- SELECT
+--     (ST_PixelAsPoints(rast, 1)).*
+-- FROM public.lulc_100m;
+
+-- -- Add spatial index
+-- CREATE INDEX idx_lulc_pixels_geom
+--     ON public.lulc_pixels USING GIST(geom);
+
+-- -- Verify pixel extraction
+-- SELECT COUNT(*) AS total_pixels
+-- FROM public.lulc_pixels
+-- WHERE val IS NOT NULL
+--   AND val != -9999;
+
+-- -- -----------------------------------------------------
+-- -- 3. JOIN PIXELS WITH CLASS NAMES
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_classified;
+
+-- CREATE TABLE public.lulc_classified AS
+-- SELECT
+--     p.geom,
+--     p.val::integer                AS class_id,
+--     c.class_name,
+--     c.class_desc,
+--     c.heat_weight,
+--     c.is_urban,
+--     c.color_hex
+-- FROM public.lulc_pixels p
+-- LEFT JOIN public.lulc_classes c
+--     ON p.val::integer = c.class_id
+-- WHERE p.val IS NOT NULL
+--   AND p.val != -9999;
+
+-- -- Add spatial index
+-- CREATE INDEX idx_lulc_classified_geom
+--     ON public.lulc_classified USING GIST(geom);
+
+-- -- Verify classification
+-- SELECT
+--     class_id,
+--     class_name,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct_area,
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)
+--         ::numeric, 2)                               AS area_km2
+-- FROM public.lulc_classified
+-- GROUP BY class_id, class_name
+-- ORDER BY class_id;
+
+-- -----------------------------------------------------
+-- 4. CREATE URBAN ZONE MASK
+--    (Built-up + Industry = urban heat contributors)
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_zone;
+
+-- CREATE TABLE public.urban_zone AS
+-- SELECT
+--     geom,
+--     class_id,
+--     class_name,
+--     heat_weight
+-- FROM public.lulc_classified
+-- WHERE class_id IN (0, 4);   -- Built-up + Industry
+
+-- CREATE INDEX idx_urban_zone_geom
+--     ON public.urban_zone USING GIST(geom);
+
+-- -- Verify urban zone
+-- SELECT
+--     class_name,
+--     COUNT(*)                                         AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)
+--         ::numeric, 2)                                AS area_km2
+-- FROM public.urban_zone
+-- GROUP BY class_name
+-- ORDER BY class_name;
+
+-- -- -----------------------------------------------------
+-- -- 5. CREATE OASIS / PALM GROVE MASK
+-- --    (Class 3 = Oasis Agriculture — cooling zones)
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.oasis_zone;
+
+-- CREATE TABLE public.oasis_zone AS
+-- SELECT
+--     geom,
+--     class_id,
+--     class_name,
+--     heat_weight
+-- FROM public.lulc_classified
+-- WHERE class_id = 3;   -- Oasis Agriculture
+
+-- CREATE INDEX idx_oasis_zone_geom
+--     ON public.oasis_zone USING GIST(geom);
+
+-- -- Verify oasis zone
+-- SELECT
+--     class_name,
+--     COUNT(*)                                         AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)
+--         ::numeric, 2)                                AS area_km2
+-- FROM public.oasis_zone
+-- GROUP BY class_name;
+
+-- -- -----------------------------------------------------
+-- -- 6. CREATE BARE LAND MASK
+-- --    (Class 2 = Bare Land — secondary heat contributor)
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.bareland_zone;
+
+-- CREATE TABLE public.bareland_zone AS
+-- SELECT
+--     geom,
+--     class_id,
+--     class_name,
+--     heat_weight
+-- FROM public.lulc_classified
+-- WHERE class_id = 2;
+
+-- CREATE INDEX idx_bareland_zone_geom
+--     ON public.bareland_zone USING GIST(geom);
+
+-- -- -----------------------------------------------------
+-- -- 7. CREATE WATER BODIES MASK
+-- --    (Class 5 = Water — cooling / exclusion zones)
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.water_zone;
+
+-- CREATE TABLE public.water_zone AS
+-- SELECT
+--     geom,
+--     class_id,
+--     class_name,
+--     heat_weight
+-- FROM public.lulc_classified
+-- WHERE class_id = 5;
+
+-- CREATE INDEX idx_water_zone_geom
+--     ON public.water_zone USING GIST(geom);
+
+-- -- -----------------------------------------------------
+-- -- 8. CROSS-VALIDATE LULC WITH NDVI
+-- --    Oasis (class 3) should have higher NDVI
+-- --    Built-up (class 0) should have lower NDVI
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_ndvi_check;
+
+-- CREATE TABLE public.lulc_ndvi_check AS
+-- SELECT
+--     l.class_id,
+--     l.class_name,
+--     COUNT(*)                                          AS pixel_count,
+--     ROUND(AVG(
+--         ST_Value(n.rast, 1, l.geom)
+--     )::numeric, 4)                                    AS mean_ndvi,
+--     ROUND(MIN(
+--         ST_Value(n.rast, 1, l.geom)
+--     )::numeric, 4)                                    AS min_ndvi,
+--     ROUND(MAX(
+--         ST_Value(n.rast, 1, l.geom)
+--     )::numeric, 4)                                    AS max_ndvi
+-- FROM public.lulc_classified l
+-- JOIN public.ndvi_100m n
+--     ON ST_Intersects(n.rast, l.geom)
+-- GROUP BY l.class_id, l.class_name
+-- ORDER BY l.class_id;
+
+-- -- Verify cross-validation
+SELECT * FROM public.lulc_ndvi_check;
+
+
+-- -- =====================================================
+-- -- FINAL VERIFICATION — STEP 6 SUMMARY
+-- -- =====================================================
+-- SELECT
+--     'Total pixels classified'       AS metric,
+--     COUNT(*)::text                  AS value
+-- FROM public.lulc_classified
+
+-- UNION ALL
+-- SELECT
+--     'Urban zone pixels',
+--     COUNT(*)::text
+-- FROM public.urban_zone
+
+-- UNION ALL
+-- SELECT
+--     'Oasis zone pixels',
+--     COUNT(*)::text
+-- FROM public.oasis_zone
+
+-- UNION ALL
+-- SELECT
+--     'Bare land pixels',
+--     COUNT(*)::text
+-- FROM public.bareland_zone
+
+-- UNION ALL
+-- SELECT
+--     'Water body pixels',
+--     COUNT(*)::text
+-- FROM public.water_zone
+
+-- UNION ALL
+-- SELECT
+--     'Urban area km2',
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)::numeric, 2)::text
+-- FROM public.urban_zone
+
+-- UNION ALL
+-- SELECT
+--     'Oasis area km2',
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)::numeric, 2)::text
+-- FROM public.oasis_zone;
+
+-- =====================================================
+-- STEP 6b: EXPORT LULC CLASSIFICATION AS SPATIAL DATA
+-- For direct visualization in QGIS via PostGIS connection
+-- =====================================================
+
+-- -- -----------------------------------------------------
+-- -- 1. MAIN EXPORT TABLE — full classified layer
+-- --    with all attributes for QGIS symbology
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_export;
+
+-- CREATE TABLE public.lulc_export AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY class_id)  AS gid,
+--     geom,
+--     class_id,
+--     class_name,
+--     class_desc,
+--     heat_weight,
+--     is_urban,
+--     color_hex,
+--     -- area of each pixel in m2 and km2
+--     ROUND((100 * 100)::numeric, 2)          AS pixel_area_m2,
+--     ROUND((100 * 100 / 1000000.0)::numeric, 6) AS pixel_area_km2
+-- FROM public.lulc_classified
+-- ORDER BY class_id;
+
+-- -- Add primary key for QGIS
+-- ALTER TABLE public.lulc_export
+--     ADD PRIMARY KEY (gid);
+
+-- -- Add spatial index
+-- CREATE INDEX idx_lulc_export_geom
+--     ON public.lulc_export USING GIST(geom);
+
+-- -- Register geometry in PostGIS metadata
+-- SELECT Populate_Geometry_Columns('public.lulc_export'::regclass);
+
+-- -- Verify
+-- SELECT
+--     class_id,
+--     class_name,
+--     color_hex,
+--     COUNT(*)                                          AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)
+--         ::numeric, 2)                                 AS area_km2
+-- FROM public.lulc_export
+-- GROUP BY class_id, class_name, color_hex
+-- ORDER BY class_id;
+
+-- -- -----------------------------------------------------
+-- -- 2. DISSOLVED POLYGONS per class
+-- --    Merges all pixels of same class into one polygon
+-- --    Cleaner and faster to render in QGIS
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.lulc_dissolved;
+
+-- CREATE TABLE public.lulc_dissolved AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY c.class_id) AS gid,
+--     c.class_id,
+--     c.class_name,
+--     c.class_desc,
+--     c.heat_weight,
+--     c.is_urban,
+--     c.color_hex,
+--     COUNT(l.geom)                            AS pixel_count,
+--     ROUND((COUNT(l.geom) * 100 * 100
+--         / 1000000.0)::numeric, 2)            AS area_km2,
+--     ST_Union(l.geom)                         AS geom
+-- FROM public.lulc_classified l
+-- JOIN public.lulc_classes c
+--     ON l.class_id = c.class_id
+-- GROUP BY
+--     c.class_id,
+--     c.class_name,
+--     c.class_desc,
+--     c.heat_weight,
+--     c.is_urban,
+--     c.color_hex;
+
+-- -- Add primary key
+-- ALTER TABLE public.lulc_dissolved
+--     ADD PRIMARY KEY (gid);
+
+-- -- Add spatial index
+-- CREATE INDEX idx_lulc_dissolved_geom
+--     ON public.lulc_dissolved USING GIST(geom);
+
+-- -- Register geometry
+-- SELECT Populate_Geometry_Columns('public.lulc_dissolved'::regclass);
+
+-- -- Verify dissolved layer
+-- SELECT
+--     class_id,
+--     class_name,
+--     pixel_count,
+--     area_km2,
+--     color_hex,
+--     ST_GeometryType(geom)  AS geom_type,
+--     ST_SRID(geom)          AS srid
+-- FROM public.lulc_dissolved
+-- ORDER BY class_id;
+
+-- -- -----------------------------------------------------
+-- -- 3. URBAN ZONE EXPORT — dissolved
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_zone_export;
+
+-- CREATE TABLE public.urban_zone_export AS
+-- SELECT
+--     ROW_NUMBER() OVER () AS gid,
+--     class_id,
+--     class_name,
+--     heat_weight,
+--     COUNT(*)                                     AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                AS area_km2,
+--     ST_Union(geom)                               AS geom
+-- FROM public.lulc_classified
+-- WHERE class_id IN (0, 4)
+-- GROUP BY class_id, class_name, heat_weight;
+
+-- ALTER TABLE public.urban_zone_export ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_urban_zone_export_geom
+--     ON public.urban_zone_export USING GIST(geom);
+-- SELECT Populate_Geometry_Columns('public.urban_zone_export'::regclass);
+
+-- -- -----------------------------------------------------
+-- -- 4. OASIS ZONE EXPORT — dissolved
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.oasis_zone_export;
+
+-- CREATE TABLE public.oasis_zone_export AS
+-- SELECT
+--     ROW_NUMBER() OVER () AS gid,
+--     class_id,
+--     class_name,
+--     heat_weight,
+--     COUNT(*)                                     AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                AS area_km2,
+--     ST_Union(geom)                               AS geom
+-- FROM public.lulc_classified
+-- WHERE class_id = 3
+-- GROUP BY class_id, class_name, heat_weight;
+
+-- ALTER TABLE public.oasis_zone_export ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_oasis_zone_export_geom
+--     ON public.oasis_zone_export USING GIST(geom);
+-- SELECT Populate_Geometry_Columns('public.oasis_zone_export'::regclass);
+
+-- =====================================================
+-- EXPORT AS SHAPEFILE via terminal (run in OSGeo4W Shell)
+-- =====================================================
+-- Run these commands in OSGeo4W Shell, not in pgAdmin:
+--
+-- Full classified layer (points):
+-- pgsql2shp -f "C:/output/lulc_export" -h localhost -u postgres -P yourpassword Urban_heat public.lulc_export
+--
+-- Dissolved polygons per class:
+-- pgsql2shp -f "C:/output/lulc_dissolved" -h localhost -u postgres -P yourpassword Urban_heat public.lulc_dissolved
+--
+-- Urban zone only:
+-- pgsql2shp -f "C:/output/urban_zone" -h localhost -u postgres -P yourpassword Urban_heat public.urban_zone_export
+--
+-- Oasis zone only:
+-- pgsql2shp -f "C:/output/oasis_zone" -h localhost -u postgres -P yourpassword Urban_heat public.oasis_zone_export
+
+-- -- =====================================================
+-- -- FINAL SUMMARY OF ALL EXPORT TABLES
+-- -- =====================================================
+-- SELECT
+--     'lulc_export'        AS table_name,
+--     COUNT(*)             AS rows,
+--     'Point per pixel'    AS geometry_type
+-- FROM public.lulc_export
+
+-- UNION ALL
+-- SELECT
+--     'lulc_dissolved',
+--     COUNT(*),
+--     'Dissolved polygon per class'
+
+-- FROM public.lulc_dissolved
+-- UNION ALL
+-- SELECT
+--     'urban_zone_export',
+--     COUNT(*),
+--     'Urban + Industry dissolved'
+-- FROM public.urban_zone_export
+
+-- UNION ALL
+-- SELECT
+--     'oasis_zone_export',
+--     COUNT(*),
+--     'Oasis Agriculture dissolved'
+-- FROM public.oasis_zone_export;

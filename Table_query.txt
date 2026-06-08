@@ -1,0 +1,49 @@
+-- -- Create hei_export table
+-- DROP TABLE IF EXISTS public.hei_export;
+
+-- CREATE TABLE public.hei_export AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY hei_score DESC)     AS gid,
+--     geom,
+--     ROUND(hei_score::numeric, 4)                    AS hei_score,
+--     risk_class,
+--     risk_code,
+--     ROUND(pop_raw::numeric, 2)                      AS population,
+--     ROUND(ndvi_raw::numeric, 4)                     AS ndvi,
+--     lulc_class,
+--     urban_class,
+--     ROUND(lst_norm::numeric, 4)                     AS lst_norm,
+--     ROUND(pop_norm::numeric, 4)                     AS pop_norm,
+--     ROUND(ndvi_inv_norm::numeric, 4)                AS ndvi_inv,
+--     ROUND(lulc_weight::numeric, 4)                  AS lulc_w,
+--     color_hex
+-- FROM public.heat_exposure_index;
+
+-- ALTER TABLE public.hei_export ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_hei_export_geom
+--     ON public.hei_export USING GIST(geom);
+-- SELECT Populate_Geometry_Columns(
+--     'public.hei_export'::regclass);
+
+-- -- Verify
+-- SELECT COUNT(*) AS total_rows FROM public.hei_export;
+
+-- List all spatial tables available for export
+SELECT
+    table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN (
+    'hei_export',
+    'heat_hotspots',
+    'lisa_clusters',
+    'lulcf_dissolved',
+    'urban_pop_dissolved',
+    'oasis_dissolved',
+    'hei_zone_stats',
+    'heat_exposure_index',
+    'builtup_lulcf',
+    'ndvi_classified',
+    'pop_urban_dissolved'
+  )
+ORDER BY table_name;

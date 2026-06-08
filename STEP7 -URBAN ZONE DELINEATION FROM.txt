@@ -1,0 +1,409 @@
+STEP7 -URBAN ZONE DELINEATION FROM BUILDINGS (buiid)
+-- Uses OSM building footprints to delineate urban zones
+-- Output: building density grid, urban/non-urban mask
+
+
+-- =====================================================
+-- STEP 7: URBAN ZONE DELINEATION FROM BUILDINGS (buiid)
+-- Uses OSM building footprints to delineate urban zones
+-- Output: building density grid, urban/non-urban mask
+-- =====================================================
+
+-- -- -----------------------------------------------------
+-- -- 1. CHECK BUILDING TABLE STRUCTURE FIRST
+-- -- -----------------------------------------------------
+-- SELECT 
+--     column_name, 
+--     data_type
+-- FROM information_schema.columns
+-- WHERE table_name = 'buiid'
+-- ORDER BY ordinal_position;
+
+-- -- Check sample data
+-- SELECT * FROM public.buiid LIMIT 3;
+
+-- -- Check geometry type
+-- SELECT 
+--     ST_GeometryType(geom_utm) AS geom_type,
+--     ST_SRID(geom_utm)         AS srid,
+--     COUNT(*)                  AS total_buildings
+-- FROM public.buiid
+-- GROUP BY ST_GeometryType(geom_utm), ST_SRID(geom_utm);
+
+-- -- -----------------------------------------------------
+-- -- 2. CREATE 100m ANALYSIS GRID OVER AL-AHSA
+-- --    Each cell = one 100m x 100m unit
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.grid_100m;
+
+-- CREATE TABLE public.grid_100m AS
+-- SELECT
+--     ROW_NUMBER() OVER ()     AS cell_id,
+--     geom
+-- FROM ST_SquareGrid(
+--     100,                          -- 100m cell size
+--     (SELECT geom FROM public.study_mask)
+-- );
+
+-- -- FAST VERSION: Use Contains instead of Intersection
+-- -- 3-5x faster for clipping grid to boundary
+
+-- DROP TABLE IF EXISTS public.grid_clipped;
+
+-- CREATE TABLE public.grid_clipped AS
+-- SELECT
+--     g.cell_id,
+--     g.geom
+-- FROM public.grid_100m g, public.study_mask m
+-- WHERE ST_Intersects(g.geom, m.geom);  -- no ST_Intersection needed
+
+-- ALTER TABLE public.grid_clipped ADD PRIMARY KEY (cell_id);
+
+-- CREATE INDEX idx_grid_clipped_geom
+--     ON public.grid_clipped USING GIST(geom);
+
+-- -- Verify
+-- SELECT 
+--     COUNT(*) AS total_cells,
+--     ROUND((COUNT(*) * 100 * 100 / 1000000.0)::numeric, 2) AS total_area_km2
+-- FROM public.grid_clipped;
+
+-- -- -----------------------------------------------------
+-- -- 3. CALCULATE BUILDING DENSITY PER 100m CELL
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.building_density;
+
+-- CREATE TABLE public.building_density AS
+-- SELECT
+--     g.cell_id,
+--     g.geom,
+--     -- building count per cell
+--     COUNT(b.geom_utm)                              AS building_count,
+--     -- total built-up area in m2
+--     COALESCE(
+--         ROUND(SUM(
+--             ST_Area(
+--                 ST_Intersection(b.geom_utm, g.geom)
+--             ))::numeric, 2),
+--         0)                                         AS built_area_m2,
+--     -- cell area
+--     ROUND(ST_Area(g.geom)::numeric, 2)             AS cell_area_m2,
+--     -- building coverage ratio (0-1)
+--     COALESCE(
+--         ROUND((SUM(
+--             ST_Area(
+--                 ST_Intersection(b.geom_utm, g.geom)
+--             )) / NULLIF(ST_Area(g.geom), 0))
+--         ::numeric, 4),
+--         0)                                         AS density_ratio,
+--     -- building coverage percentage
+--     COALESCE(
+--         ROUND((SUM(
+--             ST_Area(
+--                 ST_Intersection(b.geom_utm, g.geom)
+--             )) / NULLIF(ST_Area(g.geom), 0) * 100)
+--         ::numeric, 2),
+--         0)                                         AS density_pct
+-- FROM public.grid_clipped g
+-- LEFT JOIN public.buiid_clip b
+--     ON ST_Intersects(b.geom_clip, g.geom)
+-- GROUP BY g.cell_id, g.geom;
+
+-- ALTER TABLE public.building_density ADD PRIMARY KEY (cell_id);
+-- CREATE INDEX idx_building_density_geom
+--     ON public.building_density USING GIST(geom);
+
+-- -- Verify density calculation
+-- SELECT
+--     COUNT(*)                                       AS total_cells,
+--     COUNT(CASE WHEN building_count > 0 THEN 1 END) AS cells_with_buildings,
+--     ROUND(AVG(density_pct)::numeric, 2)            AS avg_density_pct,
+--     ROUND(MAX(density_pct)::numeric, 2)            AS max_density_pct,
+--     ROUND(MIN(density_pct)::numeric, 2)            AS min_density_pct
+-- FROM public.building_density;
+
+-- -----------------------------------------------------
+-- 4. CLASSIFY URBAN DENSITY ZONES
+--    Based on building coverage percentage
+-- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_density_zones;
+
+-- CREATE TABLE public.urban_density_zones AS
+-- SELECT
+--     cell_id,
+--     geom,
+--     building_count,
+--     built_area_m2,
+--     cell_area_m2,
+--     density_ratio,
+--     density_pct,
+--     -- Urban density classification
+--     CASE
+--         WHEN density_pct >= 60  THEN 'High Density Urban'
+--         WHEN density_pct >= 30  THEN 'Medium Density Urban'
+--         WHEN density_pct >= 10  THEN 'Low Density Urban'
+--         WHEN density_pct >= 1   THEN 'Peri-Urban / Sparse'
+--         ELSE                         'Non-Urban'
+--     END                                            AS urban_class,
+--     -- Urban class code for raster conversion
+--     CASE
+--         WHEN density_pct >= 60  THEN 4
+--         WHEN density_pct >= 30  THEN 3
+--         WHEN density_pct >= 10  THEN 2
+--         WHEN density_pct >= 1   THEN 1
+--         ELSE                         0
+--     END                                            AS urban_code,
+--     -- Is urban flag
+--     CASE
+--         WHEN density_pct >= 10  THEN TRUE
+--         ELSE                         FALSE
+--     END                                            AS is_urban,
+--     -- Heat intensity weight based on density
+--     CASE
+--         WHEN density_pct >= 60  THEN 1.00
+--         WHEN density_pct >= 30  THEN 0.75
+--         WHEN density_pct >= 10  THEN 0.50
+--         WHEN density_pct >= 1   THEN 0.25
+--         ELSE                         0.00
+--     END                                            AS urban_heat_weight
+-- FROM public.building_density;
+
+-- ALTER TABLE public.urban_density_zones ADD PRIMARY KEY (cell_id);
+-- CREATE INDEX idx_urban_density_zones_geom
+--     ON public.urban_density_zones USING GIST(geom);
+
+-- -- Verify zone classification
+-- SELECT
+--     urban_class,
+--     urban_code,
+--     COUNT(*)                                        AS cell_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct_of_study_area,
+--     ROUND(AVG(building_count)::numeric, 1)          AS avg_buildings_per_cell,
+--     ROUND(AVG(density_pct)::numeric, 2)             AS avg_density_pct
+-- FROM public.urban_density_zones
+-- GROUP BY urban_class, urban_code
+-- ORDER BY urban_code DESC;
+
+-- -- -----------------------------------------------------
+-- -- 5. CREATE ROAD DENSITY PER CELL
+-- --    Roads contribute to urban heat island effect
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.road_density;
+
+-- CREATE TABLE public.road_density AS
+-- SELECT
+--     g.cell_id,
+--     g.geom,
+--     COUNT(r.geom_clip)                             AS road_segment_count,
+--     COALESCE(
+--         ROUND(SUM(
+--             ST_Length(
+--                 ST_Intersection(r.geom_clip, g.geom)
+--             ))::numeric, 2),
+--         0)                                         AS road_length_m,
+--     -- Road density: meters of road per hectare
+--     COALESCE(
+--         ROUND((SUM(
+--             ST_Length(
+--                 ST_Intersection(r.geom_clip, g.geom)
+--             )) / NULLIF(ST_Area(g.geom) / 10000, 0))
+--         ::numeric, 2),
+--         0)                                         AS road_density_m_per_ha
+-- FROM public.grid_clipped g
+-- LEFT JOIN public.road_clip r
+--     ON ST_Intersects(r.geom_clip, g.geom)
+-- GROUP BY g.cell_id, g.geom;
+
+-- ALTER TABLE public.road_density ADD PRIMARY KEY (cell_id);
+-- CREATE INDEX idx_road_density_geom
+--     ON public.road_density USING GIST(geom);
+
+-- -- Verify road density
+-- SELECT
+--     COUNT(*)                                        AS total_cells,
+--     COUNT(CASE WHEN road_length_m > 0 THEN 1 END)  AS cells_with_roads,
+--     ROUND(AVG(road_density_m_per_ha)::numeric, 2)   AS avg_road_density,
+--     ROUND(MAX(road_density_m_per_ha)::numeric, 2)   AS max_road_density
+-- FROM public.road_density;
+
+-- -- -----------------------------------------------------
+-- -- 6. COMBINE BUILDING + ROAD DENSITY
+-- --    Into one urban morphology table
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_morphology;
+
+-- CREATE TABLE public.urban_morphology AS
+-- SELECT
+--     u.cell_id,
+--     u.geom,
+--     u.building_count,
+--     u.built_area_m2,
+--     u.density_pct                                  AS building_density_pct,
+--     u.urban_class,
+--     u.urban_code,
+--     u.is_urban,
+--     u.urban_heat_weight,
+--     r.road_length_m,
+--     r.road_density_m_per_ha,
+--     -- Combined urban intensity score (0-1)
+--     ROUND(
+--         (COALESCE(u.density_ratio, 0) * 0.7 +
+--          LEAST(
+--              COALESCE(r.road_density_m_per_ha, 0) / 100.0,
+--              1.0
+--          ) * 0.3)::numeric,
+--     4)                                             AS urban_intensity_score
+-- FROM public.urban_density_zones u
+-- LEFT JOIN public.road_density r
+--     ON u.cell_id = r.cell_id;
+
+-- ALTER TABLE public.urban_morphology ADD PRIMARY KEY (cell_id);
+-- CREATE INDEX idx_urban_morphology_geom
+--     ON public.urban_morphology USING GIST(geom);
+
+-- -- Verify combined morphology
+-- SELECT
+--     urban_class,
+--     COUNT(*)                                        AS cell_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND(AVG(building_density_pct)::numeric, 2)    AS avg_bldg_density_pct,
+--     ROUND(AVG(road_density_m_per_ha)::numeric, 2)   AS avg_road_density,
+--     ROUND(AVG(urban_intensity_score)::numeric, 4)   AS avg_urban_intensity
+-- FROM public.urban_morphology
+-- GROUP BY urban_class
+-- ORDER BY avg_urban_intensity DESC;
+
+-- -- -----------------------------------------------------
+-- -- 7. EXPORT FOR QGIS VISUALIZATION
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_delineation_export;
+
+-- CREATE TABLE public.urban_delineation_export AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY cell_id) AS gid,
+--     cell_id,
+--     geom,
+--     building_count,
+--     ROUND(built_area_m2::numeric, 2)               AS built_area_m2,
+--     ROUND(building_density_pct::numeric, 2)        AS building_density_pct,
+--     urban_class,
+--     urban_code,
+--     is_urban,
+--     road_length_m,
+--     ROUND(road_density_m_per_ha::numeric, 2)       AS road_density_m_ha,
+--     ROUND(urban_intensity_score::numeric, 4)       AS urban_intensity,
+--     -- Color for QGIS symbology
+--     CASE urban_class
+--         WHEN 'High Density Urban'    THEN '#CC0000'
+--         WHEN 'Medium Density Urban'  THEN '#FF6600'
+--         WHEN 'Low Density Urban'     THEN '#FFAA00'
+--         WHEN 'Peri-Urban / Sparse'   THEN '#FFDD88'
+--         ELSE                              '#F5F5F5'
+--     END                                            AS color_hex
+-- FROM public.urban_morphology;
+
+-- ALTER TABLE public.urban_delineation_export ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_urban_delineation_export_geom
+--     ON public.urban_delineation_export USING GIST(geom);
+
+-- -- SELECT Populate_Geometry_Columns(
+-- --     'public.urban_delineation_export'::regclass);
+-- -- Check what columns exist in urban_morphology
+-- SELECT column_name, data_type
+-- FROM information_schema.columns
+-- WHERE table_name = 'urban_morphology'
+-- ORDER BY ordinal_position;
+
+-- -- Check if table exists at all
+-- SELECT COUNT(*) FROM public.urban_morphology;
+
+-- -- -----------------------------------------------------
+-- -- RECREATE urban_morphology cleanly
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.urban_morphology;
+
+-- CREATE TABLE public.urban_morphology AS
+-- SELECT
+--     u.cell_id,
+--     u.geom,
+--     u.building_count,
+--     u.built_area_m2,
+--     u.density_pct                                  AS building_density_pct,
+--     u.urban_class,
+--     u.urban_code,
+--     u.is_urban,
+--     u.urban_heat_weight,
+--     r.road_length_m,
+--     r.road_density_m_per_ha,
+--     ROUND(
+--         (COALESCE(u.density_ratio, 0) * 0.7 +
+--          LEAST(
+--              COALESCE(r.road_density_m_per_ha, 0) / 100.0,
+--              1.0
+--          ) * 0.3)::numeric,
+--     4)                                             AS urban_intensity_score
+-- FROM public.urban_density_zones u
+-- LEFT JOIN public.road_density r
+--     ON u.cell_id = r.cell_id;
+
+-- ALTER TABLE public.urban_morphology ADD PRIMARY KEY (cell_id);
+
+-- CREATE INDEX idx_urban_morphology_geom
+--     ON public.urban_morphology USING GIST(geom);
+
+-- -- Confirm columns created correctly
+-- -- SELECT column_name, data_type
+-- -- FROM information_schema.columns
+-- -- WHERE table_name = 'urban_morphology'
+-- -- ORDER BY ordinal_position;
+
+-- DROP TABLE IF EXISTS public.urban_delineation_export;
+
+-- CREATE TABLE public.urban_delineation_export AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY cell_id)           AS gid,
+--     cell_id,
+--     geom,
+--     building_count,
+--     ROUND(built_area_m2::numeric, 2)               AS built_area_m2,
+--     ROUND(building_density_pct::numeric, 2)        AS building_density_pct,
+--     urban_class,
+--     urban_code,
+--     is_urban,
+--     road_length_m,
+--     ROUND(road_density_m_per_ha::numeric, 2)       AS road_density_m_ha,
+--     ROUND(urban_intensity_score::numeric, 4)       AS urban_intensity,
+--     CASE urban_class
+--         WHEN 'High Density Urban'   THEN '#CC0000'
+--         WHEN 'Medium Density Urban' THEN '#FF6600'
+--         WHEN 'Low Density Urban'    THEN '#FFAA00'
+--         WHEN 'Peri-Urban / Sparse'  THEN '#FFDD88'
+--         ELSE                             '#F5F5F5'
+--     END                                            AS color_hex
+-- FROM public.urban_morphology;
+
+-- ALTER TABLE public.urban_delineation_export ADD PRIMARY KEY (gid);
+
+-- CREATE INDEX idx_urban_delineation_export_geom
+--     ON public.urban_delineation_export USING GIST(geom);
+
+-- SELECT Populate_Geometry_Columns(
+--     'public.urban_delineation_export'::regclass);
+
+-- SELECT
+--     urban_class                                    AS zone,
+--     COUNT(*)                                       AS cells,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                  AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 1)         AS pct,
+--     ROUND(AVG(building_density_pct)::numeric, 1)   AS avg_bldg_density,
+--     ROUND(AVG(urban_intensity)::numeric, 3)        AS avg_intensity,
+--     color_hex
+-- FROM public.urban_delineation_export
+-- GROUP BY urban_class, color_hex
+-- ORDER BY avg_intensity DESC;

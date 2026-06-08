@@ -1,0 +1,144 @@
+-- -- Use grid_clipped as spatial units instead of pop points
+-- DROP TABLE IF EXISTS public.hei_grid_lag;
+
+-- CREATE TABLE public.hei_grid_lag AS
+-- WITH hei_on_grid AS (
+--     SELECT
+--         g.cell_id,
+--         g.geom,
+--         AVG(h.hei_score)        AS hei_score,
+--         AVG(h.pop_raw)          AS pop_raw,
+--         MAX(h.risk_class)       AS risk_class,
+--         MAX(h.urban_class)      AS urban_class
+--     FROM public.grid_clipped g
+--     LEFT JOIN public.heat_exposure_index h
+--         ON ST_DWithin(g.geom, h.geom, 150)
+--     GROUP BY g.cell_id, g.geom
+--     HAVING AVG(h.hei_score) IS NOT NULL
+-- )
+-- SELECT
+--     h.cell_id,
+--     h.geom,
+--     h.hei_score,
+--     h.pop_raw,
+--     h.risk_class,
+--     h.urban_class,
+--     COUNT(n.hei_score)                              AS neighbor_count,
+--     ROUND(AVG(n.hei_score)::numeric, 4)             AS neighbor_mean_hei,
+--     ROUND((h.hei_score - AVG(n.hei_score))
+--         ::numeric, 4)                               AS local_deviation,
+--     ROUND(AVG(n.hei_score)::numeric, 4)             AS spatial_lag
+-- FROM hei_on_grid h
+-- LEFT JOIN hei_on_grid n
+--     ON ST_DWithin(h.geom, n.geom, 300)              -- 3 cell queen neighbors
+--    AND h.cell_id <> n.cell_id
+-- GROUP BY
+--     h.cell_id, h.geom,
+--     h.hei_score, h.pop_raw,
+--     h.risk_class, h.urban_class;
+
+-- CREATE INDEX idx_hei_grid_lag_geom
+--     ON public.hei_grid_lag USING GIST(geom);
+
+-- -- Verify
+-- SELECT
+--     COUNT(*)                                        AS total_cells,
+--     ROUND(AVG(neighbor_count)::numeric, 1)          AS avg_neighbors,
+--     ROUND(MIN(neighbor_count)::numeric, 0)          AS min_neighbors,
+--     ROUND(MAX(neighbor_count)::numeric, 0)          AS max_neighbors,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS avg_hei
+-- FROM public.hei_grid_lag
+-- WHERE neighbor_count > 0;
+
+-- WITH
+-- stats AS (
+--     SELECT
+--         AVG(hei_score)          AS mean_hei,
+--         COUNT(*)                AS n_pixels,
+--         STDDEV(hei_score)       AS std_hei
+--     FROM public.hei_grid_lag
+--     WHERE neighbor_count > 0
+-- ),
+-- deviations AS (
+--     SELECT
+--         s.n_pixels,
+--         s.mean_hei,
+--         s.std_hei,
+--         h.hei_score,
+--         h.spatial_lag,
+--         (h.hei_score - s.mean_hei)                  AS zi,
+--         (h.spatial_lag - s.mean_hei)                AS zlag_i,
+--         POWER(h.hei_score - s.mean_hei, 2)          AS zi_squared
+--     FROM public.hei_grid_lag h
+--     CROSS JOIN stats s
+--     WHERE h.neighbor_count > 0
+-- )
+-- SELECT
+--     ROUND(
+--         (d.n_pixels * SUM(d.zi * d.zlag_i)) /
+--         NULLIF(SUM(d.zi_squared), 0)
+--         ::numeric, 4)                               AS morans_i,
+--     CASE
+--         WHEN (d.n_pixels * SUM(d.zi * d.zlag_i)) /
+--              NULLIF(SUM(d.zi_squared), 0) > 0.5
+--              THEN 'Strong positive clustering'
+--         WHEN (d.n_pixels * SUM(d.zi * d.zlag_i)) /
+--              NULLIF(SUM(d.zi_squared), 0) > 0.2
+--              THEN 'Moderate positive clustering'
+--         WHEN (d.n_pixels * SUM(d.zi * d.zlag_i)) /
+--              NULLIF(SUM(d.zi_squared), 0) > 0
+--              THEN 'Weak positive clustering'
+--         WHEN (d.n_pixels * SUM(d.zi * d.zlag_i)) /
+--              NULLIF(SUM(d.zi_squared), 0) < 0
+--              THEN 'Negative spatial autocorrelation'
+--         ELSE      'Random spatial pattern'
+--     END                                             AS spatial_pattern,
+--     ROUND(AVG(d.mean_hei)::numeric, 4)              AS mean_hei,
+--     ROUND(AVG(d.std_hei)::numeric, 4)               AS std_hei,
+--     COUNT(*)                                        AS pixels_analysed
+-- FROM deviations d
+-- GROUP BY d.n_pixels;
+
+-- -- Compute normalized version for reporting
+-- WITH
+-- stats AS (
+--     SELECT
+--         AVG(hei_score)          AS mean_hei,
+--         STDDEV(hei_score)       AS std_hei,
+--         COUNT(*)                AS n
+--     FROM public.hei_grid_lag
+--     WHERE neighbor_count > 0
+-- ),
+-- normalized AS (
+--     SELECT
+--         s.n,
+--         s.mean_hei,
+--         s.std_hei,
+--         -- Standardized z-scores
+--         (h.hei_score - s.mean_hei) / NULLIF(s.std_hei, 0) AS zi,
+--         (h.spatial_lag - s.mean_hei) / NULLIF(s.std_hei, 0) AS zlag_i
+--     FROM public.hei_grid_lag h
+--     CROSS JOIN stats s
+--     WHERE h.neighbor_count > 0
+-- )
+-- SELECT
+--     -- Normalized Moran's I (-1 to +1 range)
+--     ROUND(
+--         SUM(zi * zlag_i) / NULLIF(COUNT(*), 0)
+--         ::numeric, 4)                               AS morans_i_normalized,
+--     CASE
+--         WHEN SUM(zi * zlag_i) / NULLIF(COUNT(*), 0) > 0.5
+--              THEN 'Strong positive clustering'
+--         WHEN SUM(zi * zlag_i) / NULLIF(COUNT(*), 0) > 0.2
+--              THEN 'Moderate positive clustering'
+--         WHEN SUM(zi * zlag_i) / NULLIF(COUNT(*), 0) > 0
+--              THEN 'Weak positive clustering'
+--         WHEN SUM(zi * zlag_i) / NULLIF(COUNT(*), 0) < 0
+--              THEN 'Negative autocorrelation'
+--         ELSE      'Random pattern'
+--     END                                             AS interpretation,
+--     COUNT(*)                                        AS n_cells,
+--     ROUND(AVG(zi * zlag_i)::numeric, 4)             AS avg_cross_product,
+--     -- Expected value under randomness
+--     ROUND((-1.0 / (COUNT(*) - 1))::numeric, 4)      AS expected_i
+-- FROM normalized;

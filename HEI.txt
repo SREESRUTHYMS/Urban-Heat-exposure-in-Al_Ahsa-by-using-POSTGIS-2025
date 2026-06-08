@@ -1,0 +1,419 @@
+-- =====================================================
+-- STEP 9: HEAT EXPOSURE INDEX (HEI) COMPUTATION
+-- Formula:
+-- HEI = 0.40×LST_norm + 0.30×POP_norm +
+--       0.20×NDVI_inv_norm + 0.10×LULC_heat_weight
+-- =====================================================
+
+-- -- -----------------------------------------------------
+-- -- 1. CHECK ALL INPUT LAYERS ARE READY
+-- -- -----------------------------------------------------
+-- SELECT
+--     'lst_monthly_stats'     AS layer,
+--     COUNT(*)                AS count,
+--     'Stats table'           AS type
+-- FROM public.lst_monthly_stats
+
+-- UNION ALL
+-- SELECT
+--     'pop_pixels',
+--     COUNT(*),
+--     'Population pixels'
+-- FROM public.pop_pixels
+-- WHERE val > 0
+
+-- UNION ALL
+-- SELECT
+--     'ndvi_classified',
+--     COUNT(*),
+--     'NDVI pixels'
+-- FROM public.ndvi_classified
+
+-- UNION ALL
+-- SELECT
+--     'lulcf_classified',
+--     COUNT(*),
+--     'LULC pixels'
+-- FROM public.lulcf_classified
+
+-- UNION ALL
+-- SELECT
+--     'pop_urban_classified',
+--     COUNT(*),
+--     'Urban zones'
+-- FROM public.pop_urban_classified
+-- WHERE is_urban = TRUE;
+
+-- -- -- -----------------------------------------------------
+-- -- -- 2. GET LST SUMMER MEAN FOR NORMALIZATION
+-- -- -- -----------------------------------------------------
+-- -- SELECT
+-- --     ROUND(AVG(lst_mean)::numeric, 4)    AS summer_mean,
+-- --     ROUND(MIN(lst_mean)::numeric, 4)    AS summer_min,
+-- --     ROUND(MAX(lst_mean)::numeric, 4)    AS summer_max
+-- -- FROM public.lst_monthly_stats
+-- -- WHERE month IN (6, 7, 8);
+
+-- -- Rebuild hei_input with fixed LULC join
+-- DROP TABLE IF EXISTS public.hei_input;
+
+-- CREATE TABLE public.hei_input AS
+-- WITH
+-- lst_stats AS (
+--     SELECT
+--         ROUND(AVG(lst_mean)::numeric, 4)    AS lst_mean,
+--         ROUND(MIN(lst_mean)::numeric, 4)    AS lst_min,
+--         ROUND(MAX(lst_mean)::numeric, 4)    AS lst_max
+--     FROM public.lst_monthly_stats
+--     WHERE month IN (6, 7, 8)
+-- ),
+-- pop_stats AS (
+--     SELECT
+--         MIN(CASE WHEN val > 0 THEN val END) AS pop_min,
+--         MAX(val)                            AS pop_max
+--     FROM public.pop_pixels
+--     WHERE val IS NOT NULL
+--       AND val > 0
+--       AND val != -9999
+-- ),
+-- ndvi_stats AS (
+--     SELECT
+--         MIN(ndvi_value)                     AS ndvi_min,
+--         MAX(ndvi_value)                     AS ndvi_max
+--     FROM public.ndvi_classified
+--     WHERE ndvi_value IS NOT NULL
+-- )
+-- SELECT
+--     p.geom,
+--     -- Raw values
+--     p.val                                           AS pop_raw,
+--     n.ndvi_value                                    AS ndvi_raw,
+--     -- Use lulcf heat weight with wider search radius
+--     COALESCE(l.heat_weight, 0.50)                   AS lulc_heat_weight,
+--     COALESCE(l.class_name, 'Unknown')               AS lulc_class,
+--     u.urban_class,
+--     u.urban_code,
+--     -- LST normalized
+--     ROUND(
+--         ((ls.lst_mean - ls.lst_min) /
+--          NULLIF(ls.lst_max - ls.lst_min, 0))
+--         ::numeric, 4)                               AS lst_norm,
+--     -- Population normalized
+--     ROUND(
+--         (COALESCE(p.val, 0) /
+--          NULLIF(ps.pop_max, 0))
+--         ::numeric, 6)                               AS pop_norm,
+--     -- NDVI inverse normalized
+--     ROUND(
+--         (1.0 - COALESCE(
+--             (n.ndvi_value - ns.ndvi_min) /
+--             NULLIF(ns.ndvi_max - ns.ndvi_min, 0),
+--             0.5))
+--         ::numeric, 4)                               AS ndvi_inv_norm,
+--     -- LULC weight
+--     COALESCE(l.heat_weight, 0.50)                   AS lulc_weight
+-- FROM public.pop_pixels p
+-- -- NDVI join
+-- LEFT JOIN public.ndvi_classified n
+--     ON ST_DWithin(p.geom, n.geom, 200)
+-- -- LULC join with larger radius to catch 30m pixels
+-- LEFT JOIN LATERAL (
+--     SELECT
+--         lc.heat_weight,
+--         lc.class_name
+--     FROM public.lulcf_classified lc
+--     WHERE ST_DWithin(p.geom, lc.geom, 500)
+--     ORDER BY ST_Distance(p.geom, lc.geom)
+--     LIMIT 1
+-- ) l ON TRUE
+-- -- Urban classification
+-- LEFT JOIN public.pop_urban_classified u
+--     ON ST_Equals(p.geom, u.geom)
+-- CROSS JOIN lst_stats ls
+-- CROSS JOIN pop_stats ps
+-- CROSS JOIN ndvi_stats ns
+-- WHERE p.val IS NOT NULL
+--   AND p.val != -9999
+--   AND p.val >= 0;
+
+-- CREATE INDEX idx_hei_input_geom
+--     ON public.hei_input USING GIST(geom);
+
+-- -- Verify
+-- SELECT
+--     COUNT(*)                                        AS total_pixels,
+--     COUNT(CASE WHEN pop_raw > 0  THEN 1 END)        AS populated_pixels,
+--     COUNT(CASE WHEN ndvi_raw IS NOT NULL
+--         THEN 1 END)                                 AS has_ndvi,
+--     COUNT(CASE WHEN lulc_class != 'Unknown'
+--         THEN 1 END)                                 AS has_lulc,
+--     ROUND(AVG(lst_norm)::numeric, 4)                AS avg_lst_norm,
+--     ROUND(AVG(pop_norm)::numeric, 4)                AS avg_pop_norm,
+--     ROUND(AVG(ndvi_inv_norm)::numeric, 4)           AS avg_ndvi_inv,
+--     ROUND(AVG(lulc_weight)::numeric, 4)             AS avg_lulc_weight
+-- FROM public.hei_input;
+
+-- -- -----------------------------------------------------
+-- -- 4. COMPUTE HEAT EXPOSURE INDEX
+-- -- HEI = 0.40×LST + 0.30×POP + 0.20×NDVI_inv + 0.10×LULC
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.heat_exposure_index;
+
+-- CREATE TABLE public.heat_exposure_index AS
+-- SELECT
+--     geom,
+--     pop_raw,
+--     ndvi_raw,
+--     lulc_class,
+--     urban_class,
+--     lst_norm,
+--     pop_norm,
+--     ndvi_inv_norm,
+--     lulc_weight,
+--     -- COMPUTE HEI SCORE
+--     ROUND(
+--         (0.40 * lst_norm +
+--          0.30 * pop_norm +
+--          0.20 * ndvi_inv_norm +
+--          0.10 * lulc_weight)
+--         ::numeric, 4)                               AS hei_score,
+--     -- CLASSIFY RISK
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70
+--              THEN 'Very High Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50
+--              THEN 'High Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30
+--              THEN 'Moderate Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10
+--              THEN 'Low Risk'
+--         ELSE      'Very Low Risk'
+--     END                                             AS risk_class,
+--     -- Risk code for raster conversion
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70 THEN 5
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50 THEN 4
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30 THEN 3
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10 THEN 2
+--         ELSE                                   1
+--     END                                             AS risk_code,
+--     -- Color for QGIS
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70
+--              THEN '#CC0000'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50
+--              THEN '#FF6600'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30
+--              THEN '#FFAA00'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10
+--              THEN '#FFDD88'
+--         ELSE      '#4499FF'
+--     END                                             AS color_hex
+-- FROM public.hei_input;
+
+-- CREATE INDEX idx_hei_geom
+--     ON public.heat_exposure_index USING GIST(geom);
+
+-- -- -----------------------------------------------------
+-- -- 5. VERIFY HEI DISTRIBUTION
+-- -- -----------------------------------------------------
+-- SELECT
+--     risk_class,
+--     risk_code,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS avg_hei,
+--     ROUND(MIN(hei_score)::numeric, 4)               AS min_hei,
+--     ROUND(MAX(hei_score)::numeric, 4)               AS max_hei,
+--     color_hex
+-- FROM public.heat_exposure_index
+-- GROUP BY risk_class, risk_code, color_hex
+-- ORDER BY risk_code DESC;
+
+-- -- -----------------------------------------------------
+-- -- 6. HOTSPOT DETECTION — TOP 10% HEI ZONES
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.heat_hotspots;
+
+-- CREATE TABLE public.heat_hotspots AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY hei_score DESC) AS gid,
+--     geom,
+--     hei_score,
+--     risk_class,
+--     pop_raw,
+--     lulc_class,
+--     urban_class,
+--     color_hex
+-- FROM public.heat_exposure_index
+-- WHERE hei_score >= (
+--     SELECT PERCENTILE_CONT(0.90)
+--     WITHIN GROUP (ORDER BY hei_score)
+--     FROM public.heat_exposure_index
+-- );
+
+-- ALTER TABLE public.heat_hotspots ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_heat_hotspots_geom
+--     ON public.heat_hotspots USING GIST(geom);
+-- SELECT Populate_Geometry_Columns(
+--     'public.heat_hotspots'::regclass);
+
+-- -- Verify hotspots
+-- SELECT
+--     COUNT(*)                                        AS hotspot_pixels,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS hotspot_area_km2,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS avg_hei_score,
+--     ROUND(MIN(hei_score)::numeric, 4)               AS min_hei_score,
+--     ROUND(MAX(hei_score)::numeric, 4)               AS max_hei_score
+-- FROM public.heat_hotspots;
+
+-- -- -----------------------------------------------------
+-- -- 7. ZONE STATISTICS PER URBAN CLASS
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.hei_zone_stats;
+
+-- CREATE TABLE public.hei_zone_stats AS
+-- SELECT
+--     COALESCE(urban_class, 'Uninhabited')            AS urban_zone,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS mean_hei,
+--     ROUND(MAX(hei_score)::numeric, 4)               AS max_hei,
+--     ROUND(MIN(hei_score)::numeric, 4)               AS min_hei,
+--     ROUND(STDDEV(hei_score)::numeric, 4)            AS std_hei,
+--     ROUND(SUM(pop_raw)::numeric, 0)                 AS total_population,
+--     ROUND(AVG(pop_raw)::numeric, 2)                 AS avg_pop_density,
+--     -- Population weighted HEI
+--     ROUND(
+--         SUM(hei_score * COALESCE(pop_raw, 0)) /
+--         NULLIF(SUM(COALESCE(pop_raw, 0)), 0)
+--         ::numeric, 4)                               AS pop_weighted_hei
+-- FROM public.heat_exposure_index
+-- GROUP BY urban_class
+-- ORDER BY mean_hei DESC;
+
+-- SELECT * FROM public.hei_zone_stats;
+
+-- -- -----------------------------------------------------
+-- -- 8. EXPORT HEI FOR QGIS
+-- -- -----------------------------------------------------
+-- DROP TABLE IF EXISTS public.hei_export;
+
+-- CREATE TABLE public.hei_export AS
+-- SELECT
+--     ROW_NUMBER() OVER (ORDER BY hei_score DESC)     AS gid,
+--     geom,
+--     ROUND(hei_score::numeric, 4)                    AS hei_score,
+--     risk_class,
+--     risk_code,
+--     ROUND(pop_raw::numeric, 2)                      AS population,
+--     ROUND(ndvi_raw::numeric, 4)                     AS ndvi,
+--     lulc_class,
+--     urban_class,
+--     ROUND(lst_norm::numeric, 4)                     AS lst_norm,
+--     ROUND(pop_norm::numeric, 4)                     AS pop_norm,
+--     ROUND(ndvi_inv_norm::numeric, 4)                AS ndvi_inv,
+--     ROUND(lulc_weight::numeric, 4)                  AS lulc_w,
+--     color_hex
+-- FROM public.heat_exposure_index;
+
+-- ALTER TABLE public.hei_export ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_hei_export_geom
+--     ON public.hei_export USING GIST(geom);
+-- SELECT Populate_Geometry_Columns(
+--     'public.hei_export'::regclass);
+
+-- -- =====================================================
+-- -- FINAL VERIFICATION — COMPLETE HEI SUMMARY
+-- -- =====================================================
+-- SELECT
+--     'Total pixels analysed'         AS metric,
+--     COUNT(*)::text                  AS value
+-- FROM public.heat_exposure_index
+
+-- UNION ALL
+-- SELECT
+--     'Very High Risk pixels',
+--     COUNT(*)::text
+-- FROM public.heat_exposure_index
+-- WHERE risk_class = 'Very High Risk'
+
+-- UNION ALL
+-- SELECT
+--     'High Risk pixels',
+--     COUNT(*)::text
+-- FROM public.heat_exposure_index
+-- WHERE risk_class = 'High Risk'
+
+-- UNION ALL
+-- SELECT
+--     'Hotspot area km2',
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)::text
+-- FROM public.heat_hotspots
+
+-- UNION ALL
+-- SELECT
+--     'Total population exposed',
+--     ROUND(SUM(pop_raw)::numeric, 0)::text
+-- FROM public.heat_exposure_index
+-- WHERE pop_raw > 0
+
+-- UNION ALL
+-- SELECT
+--     'Mean HEI score',
+--     ROUND(AVG(hei_score)::numeric, 4)::text
+-- FROM public.heat_exposure_index
+
+-- UNION ALL
+-- SELECT
+--     'Max HEI score',
+--     ROUND(MAX(hei_score)::numeric, 4)::text
+-- FROM public.heat_exposure_index
+
+-- UNION ALL
+-- SELECT
+--     'Min HEI score',
+--     ROUND(MIN(hei_score)::numeric, 4)::text
+-- FROM public.heat_exposure_index;

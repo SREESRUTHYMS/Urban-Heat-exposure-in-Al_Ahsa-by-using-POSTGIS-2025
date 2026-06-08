@@ -1,0 +1,380 @@
+-- -- Run this alone first
+-- DROP TABLE IF EXISTS public.lulcf_pixels_direct;
+
+-- CREATE TABLE public.lulcf_pixels_direct AS
+-- SELECT
+--     (ST_PixelAsPoints(rast, 1)).*
+-- FROM public.lulcf
+-- WHERE rast IS NOT NULL;
+
+-- CREATE INDEX idx_lulcf_pixels_direct_geom
+--     ON public.lulcf_pixels_direct USING GIST(geom);
+
+-- SELECT
+--     COUNT(*)                        AS total_pixels,
+--     COUNT(CASE WHEN val BETWEEN 0
+--         AND 5 THEN 1 END)           AS valid_pixels,
+--     MIN(val)                        AS min_val,
+--     MAX(val)                        AS max_val
+-- FROM public.lulcf_pixels_direct;
+
+-- -- =====================================================
+-- -- REBUILD lulcf_classified FROM DIRECT PIXELS
+-- -- =====================================================
+
+-- -- Step 1: Recreate lulcf_classified from direct pixels
+-- DROP TABLE IF EXISTS public.lulcf_classified;
+
+-- CREATE TABLE public.lulcf_classified AS
+-- SELECT
+--     geom,
+--     val::integer                    AS class_id,
+--     CASE val::integer
+--         WHEN 0 THEN 'Water'
+--         WHEN 1 THEN 'Built_up'
+--         WHEN 2 THEN 'Minepits/Industry'
+--         WHEN 3 THEN 'Natural Vegetation'
+--         WHEN 4 THEN 'Oasis Agriculture/Palm'
+--         WHEN 5 THEN 'Bare Land'
+--         ELSE        'Unknown'
+--     END                             AS class_name,
+--     CASE val::integer
+--         WHEN 0 THEN 0.00
+--         WHEN 1 THEN 1.00
+--         WHEN 2 THEN 0.90
+--         WHEN 3 THEN 0.10
+--         WHEN 4 THEN 0.20
+--         WHEN 5 THEN 0.70
+--         ELSE        0.50
+--     END                             AS heat_weight,
+--     CASE val::integer
+--         WHEN 1 THEN TRUE
+--         WHEN 2 THEN TRUE
+--         ELSE        FALSE
+--     END                             AS is_urban,
+--     CASE val::integer
+--         WHEN 0 THEN '#4499FF'
+--         WHEN 1 THEN '#FF4444'
+--         WHEN 2 THEN '#AA4400'
+--         WHEN 3 THEN '#33AA33'
+--         WHEN 4 THEN '#66CC66'
+--         WHEN 5 THEN '#DDBB77'
+--         ELSE        '#FFFFFF'
+--     END                             AS color_hex
+-- FROM public.lulcf_pixels_direct
+-- WHERE val IS NOT NULL
+--   AND val >= 0
+--   AND val <= 5;
+
+-- CREATE INDEX idx_lulcf_classified_geom
+--     ON public.lulcf_classified USING GIST(geom);
+
+-- -- Verify
+-- SELECT
+--     class_id,
+--     class_name,
+--     COUNT(*)                        AS pixel_count,
+--     ROUND((COUNT(*) * 30 * 30
+--         / 1000000.0)::numeric, 2)   AS area_km2
+-- FROM public.lulcf_classified
+-- GROUP BY class_id, class_name
+-- ORDER BY class_id;
+
+-- -- =====================================================
+-- -- REBUILD hei_input WITH CORRECT LULC JOIN
+-- -- =====================================================
+-- DROP TABLE IF EXISTS public.hei_input;
+
+-- CREATE TABLE public.hei_input AS
+-- WITH
+-- lst_stats AS (
+--     SELECT
+--         ROUND(AVG(lst_mean)::numeric, 4)    AS lst_mean,
+--         ROUND(MIN(lst_mean)::numeric, 4)    AS lst_min,
+--         ROUND(MAX(lst_mean)::numeric, 4)    AS lst_max
+--     FROM public.lst_monthly_stats
+--     WHERE month IN (6, 7, 8)
+-- ),
+-- pop_stats AS (
+--     SELECT
+--         MAX(val)                            AS pop_max
+--     FROM public.pop_pixels
+--     WHERE val IS NOT NULL
+--       AND val > 0
+--       AND val != -9999
+-- ),
+-- ndvi_stats AS (
+--     SELECT
+--         MIN(ndvi_value)                     AS ndvi_min,
+--         MAX(ndvi_value)                     AS ndvi_max
+--     FROM public.ndvi_classified
+--     WHERE ndvi_value IS NOT NULL
+-- )
+-- SELECT
+--     p.geom,
+--     p.val                                           AS pop_raw,
+--     n.ndvi_value                                    AS ndvi_raw,
+--     COALESCE(l.heat_weight, 0.50)                   AS lulc_heat_weight,
+--     COALESCE(l.class_name, 'Unknown')               AS lulc_class,
+--     u.urban_class,
+--     u.urban_code,
+--     -- LST normalized
+--     ROUND(
+--         ((ls.lst_mean - ls.lst_min) /
+--          NULLIF(ls.lst_max - ls.lst_min, 0))
+--         ::numeric, 4)                               AS lst_norm,
+--     -- Population normalized
+--     ROUND(
+--         (COALESCE(p.val, 0) /
+--          NULLIF(ps.pop_max, 0))
+--         ::numeric, 6)                               AS pop_norm,
+--     -- NDVI inverse normalized
+--     ROUND(
+--         (1.0 - COALESCE(
+--             (n.ndvi_value - ns.ndvi_min) /
+--             NULLIF(ns.ndvi_max - ns.ndvi_min, 0),
+--             0.5))
+--         ::numeric, 4)                               AS ndvi_inv_norm,
+--     COALESCE(l.heat_weight, 0.50)                   AS lulc_weight
+-- FROM public.pop_pixels p
+-- -- NDVI nearest join
+-- LEFT JOIN LATERAL (
+--     SELECT ndvi_value
+--     FROM public.ndvi_classified
+--     WHERE ST_DWithin(p.geom, geom, 200)
+--     ORDER BY p.geom <-> geom
+--     LIMIT 1
+-- ) n ON TRUE
+-- -- LULC nearest join using 30m pixels
+-- LEFT JOIN LATERAL (
+--     SELECT heat_weight, class_name
+--     FROM public.lulcf_classified
+--     WHERE ST_DWithin(p.geom, geom, 100)
+--     ORDER BY p.geom <-> geom
+--     LIMIT 1
+-- ) l ON TRUE
+-- -- Urban classification
+-- LEFT JOIN public.pop_urban_classified u
+--     ON ST_Equals(p.geom, u.geom)
+-- CROSS JOIN lst_stats ls
+-- CROSS JOIN pop_stats ps
+-- CROSS JOIN ndvi_stats ns
+-- WHERE p.val IS NOT NULL
+--   AND p.val != -9999
+--   AND p.val >= 0;
+
+-- CREATE INDEX idx_hei_input_geom
+--     ON public.hei_input USING GIST(geom);
+
+-- -- Verify
+-- SELECT
+--     COUNT(*)                                        AS total_pixels,
+--     COUNT(CASE WHEN pop_raw > 0  THEN 1 END)        AS populated_pixels,
+--     COUNT(CASE WHEN ndvi_raw IS NOT NULL
+--         THEN 1 END)                                 AS has_ndvi,
+--     COUNT(CASE WHEN lulc_class != 'Unknown'
+--         THEN 1 END)                                 AS has_lulc,
+--     ROUND(AVG(lst_norm)::numeric, 4)                AS avg_lst_norm,
+--     ROUND(AVG(pop_norm)::numeric, 4)                AS avg_pop_norm,
+--     ROUND(AVG(ndvi_inv_norm)::numeric, 4)           AS avg_ndvi_inv,
+--     ROUND(AVG(lulc_weight)::numeric, 4)             AS avg_lulc_weight
+-- FROM public.hei_input;
+
+
+-- -- =====================================================
+-- -- COMPUTE HEAT EXPOSURE INDEX
+-- -- =====================================================
+-- DROP TABLE IF EXISTS public.heat_exposure_index;
+
+-- CREATE TABLE public.heat_exposure_index AS
+-- SELECT
+--     geom,
+--     pop_raw,
+--     ndvi_raw,
+--     lulc_class,
+--     urban_class,
+--     lst_norm,
+--     pop_norm,
+--     ndvi_inv_norm,
+--     lulc_weight,
+--     -- HEI SCORE
+--     ROUND(
+--         (0.40 * lst_norm +
+--          0.30 * pop_norm +
+--          0.20 * ndvi_inv_norm +
+--          0.10 * lulc_weight)
+--         ::numeric, 4)                               AS hei_score,
+--     -- RISK CLASS
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70
+--              THEN 'Very High Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50
+--              THEN 'High Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30
+--              THEN 'Moderate Risk'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10
+--              THEN 'Low Risk'
+--         ELSE      'Very Low Risk'
+--     END                                             AS risk_class,
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70 THEN 5
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50 THEN 4
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30 THEN 3
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10 THEN 2
+--         ELSE                                   1
+--     END                                             AS risk_code,
+--     CASE
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.70
+--              THEN '#CC0000'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.50
+--              THEN '#FF6600'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.30
+--              THEN '#FFAA00'
+--         WHEN (0.40 * lst_norm +
+--               0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm +
+--               0.10 * lulc_weight) >= 0.10
+--              THEN '#FFDD88'
+--         ELSE      '#4499FF'
+--     END                                             AS color_hex
+-- FROM public.hei_input;
+
+-- CREATE INDEX idx_hei_geom
+--     ON public.heat_exposure_index USING GIST(geom);
+
+-- -- Verify HEI distribution
+-- SELECT
+--     risk_class,
+--     risk_code,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS avg_hei,
+--     ROUND(MIN(hei_score)::numeric, 4)               AS min_hei,
+--     ROUND(MAX(hei_score)::numeric, 4)               AS max_hei,
+--     color_hex
+-- FROM public.heat_exposure_index
+-- GROUP BY risk_class, risk_code, color_hex
+-- ORDER BY risk_code DESC;
+
+-- -- =====================================================
+-- -- COMPUTE HEAT EXPOSURE INDEX — FULL BLOCK
+-- -- =====================================================
+-- DROP TABLE IF EXISTS public.heat_exposure_index;
+
+-- CREATE TABLE public.heat_exposure_index AS
+-- SELECT
+--     geom,
+--     pop_raw,
+--     ndvi_raw,
+--     lulc_class,
+--     urban_class,
+--     lst_norm,
+--     pop_norm,
+--     ndvi_inv_norm,
+--     lulc_weight,
+--     ROUND(
+--         (0.40 * lst_norm +
+--          0.30 * pop_norm +
+--          0.20 * ndvi_inv_norm +
+--          0.10 * lulc_weight)
+--         ::numeric, 4)                               AS hei_score,
+--     CASE
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.70
+--              THEN 'Very High Risk'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.50
+--              THEN 'High Risk'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.30
+--              THEN 'Moderate Risk'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.10
+--              THEN 'Low Risk'
+--         ELSE      'Very Low Risk'
+--     END                                             AS risk_class,
+--     CASE
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.70 THEN 5
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.50 THEN 4
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.30 THEN 3
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.10 THEN 2
+--         ELSE                                                          1
+--     END                                             AS risk_code,
+--     CASE
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.70
+--              THEN '#CC0000'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.50
+--              THEN '#FF6600'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.30
+--              THEN '#FFAA00'
+--         WHEN (0.40 * lst_norm + 0.30 * pop_norm +
+--               0.20 * ndvi_inv_norm + 0.10 * lulc_weight) >= 0.10
+--              THEN '#FFDD88'
+--         ELSE      '#4499FF'
+--     END                                             AS color_hex
+-- FROM public.hei_input;
+
+-- CREATE INDEX idx_hei_geom
+--     ON public.heat_exposure_index USING GIST(geom);
+
+-- -- Verify
+-- SELECT
+--     risk_class,
+--     risk_code,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct,
+--     ROUND(AVG(hei_score)::numeric, 4)               AS avg_hei,
+--     ROUND(MIN(hei_score)::numeric, 4)               AS min_hei,
+--     ROUND(MAX(hei_score)::numeric, 4)               AS max_hei,
+--     color_hex
+-- FROM public.heat_exposure_index
+-- GROUP BY risk_class, risk_code, color_hex
+-- ORDER BY risk_code DESC;
+
+

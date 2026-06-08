@@ -1,0 +1,184 @@
+-- URBAN ZONE DELINEATION
+
+-- =====================================================
+-- URBAN DELINEATION FROM POPULATION DATA
+-- WorldPop SAU 2020 100m resolution
+-- =====================================================
+
+-- -- STEP 1: Check population raster values
+-- SELECT
+--     COUNT(*)                                        AS tile_count,
+--     MAX(ST_SRID(rast))                              AS srid,
+--     (ST_SummaryStats(rast)).min                     AS min_pop,
+--     (ST_SummaryStats(rast)).max                     AS max_pop,
+--     (ST_SummaryStats(rast)).mean                    AS mean_pop
+-- FROM public.pop_100m
+-- GROUP BY (ST_SummaryStats(rast)).min,
+--          (ST_SummaryStats(rast)).max,
+--          (ST_SummaryStats(rast)).mean
+-- LIMIT 1;
+
+-- -- STEP 2: Extract population pixels
+-- DROP TABLE IF EXISTS public.pop_pixels;
+
+-- CREATE TABLE public.pop_pixels AS
+-- SELECT
+--     (ST_PixelAsPoints(rast, 1)).*
+-- FROM public.pop_100m;
+
+-- CREATE INDEX idx_pop_pixels_geom
+--     ON public.pop_pixels USING GIST(geom);
+
+-- -- Check distribution
+-- SELECT
+--     COUNT(*)                                        AS total_pixels,
+--     COUNT(CASE WHEN val > 0    THEN 1 END)          AS populated_pixels,
+--     COUNT(CASE WHEN val <= 0   THEN 1 END)          AS empty_pixels,
+--     ROUND(MIN(CASE WHEN val > 0
+--         THEN val END)::numeric, 4)                  AS min_pop_density,
+--     ROUND(MAX(val)::numeric, 2)                     AS max_pop_density,
+--     ROUND(AVG(CASE WHEN val > 0
+--         THEN val END)::numeric, 4)                  AS avg_pop_density
+-- FROM public.pop_pixels
+-- WHERE val IS NOT NULL
+--   AND val != -9999;
+
+-- -- STEP 3: Classify urban zones by population density
+-- DROP TABLE IF EXISTS public.pop_urban_classified;
+
+-- CREATE TABLE public.pop_urban_classified AS
+-- SELECT
+--     geom,
+--     ROUND(val::numeric, 4)                          AS pop_density,
+--     -- Urban classification by population per 100m cell
+--     CASE
+--         WHEN val >= 100  THEN 'High Density Urban'
+--         WHEN val >= 50   THEN 'Medium Density Urban'
+--         WHEN val >= 10   THEN 'Low Density Urban'
+--         WHEN val >= 1    THEN 'Peri-Urban / Sparse'
+--         WHEN val > 0     THEN 'Rural / Scattered'
+--         ELSE                  'Uninhabited'
+--     END                                             AS urban_class,
+--     -- Urban class code
+--     CASE
+--         WHEN val >= 100  THEN 5
+--         WHEN val >= 50   THEN 4
+--         WHEN val >= 10   THEN 3
+--         WHEN val >= 1    THEN 2
+--         WHEN val > 0     THEN 1
+--         ELSE                  0
+--     END                                             AS urban_code,
+--     -- Is urban flag
+--     CASE
+--         WHEN val >= 10   THEN TRUE
+--         ELSE                  FALSE
+--     END                                             AS is_urban,
+--     -- Heat weight based on population density
+--     CASE
+--         WHEN val >= 100  THEN 1.000
+--         WHEN val >= 50   THEN 0.800
+--         WHEN val >= 10   THEN 0.600
+--         WHEN val >= 1    THEN 0.300
+--         WHEN val > 0     THEN 0.100
+--         ELSE                  0.000
+--     END                                             AS heat_weight,
+--     -- Population exposure weight for HEI
+--     ROUND(LEAST(val / NULLIF(
+--         MAX(val) OVER(), 0), 1.0)
+--         ::numeric, 6)                               AS pop_norm,
+--     -- Color for QGIS
+--     CASE
+--         WHEN val >= 100  THEN '#CC0000'
+--         WHEN val >= 50   THEN '#FF6600'
+--         WHEN val >= 10   THEN '#FFAA00'
+--         WHEN val >= 1    THEN '#FFDD88'
+--         WHEN val > 0     THEN '#FFFFCC'
+--         ELSE                  '#F5F5F5'
+--     END                                             AS color_hex
+-- FROM public.pop_pixels
+-- WHERE val IS NOT NULL
+--   AND val != -9999
+--   AND val >= 0;
+
+-- CREATE INDEX idx_pop_urban_classified_geom
+--     ON public.pop_urban_classified USING GIST(geom);
+
+-- -- STEP 4: Verify classification
+-- SELECT
+--     urban_class,
+--     urban_code,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND((COUNT(*) * 100.0 /
+--         SUM(COUNT(*)) OVER())::numeric, 2)          AS pct,
+--     ROUND(AVG(pop_density)::numeric, 2)             AS avg_pop_density,
+--     ROUND(MAX(pop_density)::numeric, 2)             AS max_pop_density,
+--     color_hex
+-- FROM public.pop_urban_classified
+-- GROUP BY urban_class, urban_code, color_hex
+-- ORDER BY urban_code DESC;
+
+-- -- STEP 5: Create urban mask from population
+-- DROP TABLE IF EXISTS public.urban_pop_mask;
+
+-- CREATE TABLE public.urban_pop_mask AS
+-- SELECT
+--     ROW_NUMBER() OVER ()                            AS gid,
+--     geom,
+--     pop_density,
+--     urban_class,
+--     urban_code,
+--     heat_weight,
+--     pop_norm,
+--     color_hex
+-- FROM public.pop_urban_classified
+-- WHERE is_urban = TRUE;
+
+-- ALTER TABLE public.urban_pop_mask ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_urban_pop_mask_geom
+--     ON public.urban_pop_mask USING GIST(geom);
+-- SELECT Populate_Geometry_Columns(
+--     'public.urban_pop_mask'::regclass);
+
+-- -- STEP 6: Dissolved for QGIS export
+-- DROP TABLE IF EXISTS public.urban_pop_dissolved;
+
+-- CREATE TABLE public.urban_pop_dissolved AS
+-- SELECT
+--     ROW_NUMBER() OVER ()                            AS gid,
+--     urban_class,
+--     urban_code,
+--     color_hex,
+--     COUNT(*)                                        AS pixel_count,
+--     ROUND((COUNT(*) * 100 * 100
+--         / 1000000.0)::numeric, 2)                   AS area_km2,
+--     ROUND(AVG(pop_density)::numeric, 2)             AS avg_pop_density,
+--     ROUND(SUM(pop_density)::numeric, 0)             AS total_population,
+--     ST_Union(geom)                                  AS geom
+-- FROM public.urban_pop_mask
+-- GROUP BY urban_class, urban_code, color_hex;
+
+-- ALTER TABLE public.urban_pop_dissolved ADD PRIMARY KEY (gid);
+-- CREATE INDEX idx_urban_pop_dissolved_geom
+--     ON public.urban_pop_dissolved USING GIST(geom);
+-- SELECT Populate_Geometry_Columns(
+--     'public.urban_pop_dissolved'::regclass);
+
+-- =====================================================
+-- FINAL VERIFICATION
+-- =====================================================
+SELECT
+    urban_class                                     AS zone,
+    COUNT(*)                                        AS cells,
+    ROUND((COUNT(*) * 100 * 100
+        / 1000000.0)::numeric, 2)                   AS area_km2,
+    ROUND((COUNT(*) * 100.0 /
+        SUM(COUNT(*)) OVER())::numeric, 1)          AS pct,
+    ROUND(AVG(pop_density)::numeric, 2)             AS avg_pop_per_cell,
+    ROUND(SUM(pop_density)::numeric, 0)             AS total_population,
+    ROUND(AVG(heat_weight)::numeric, 3)             AS avg_heat_weight,
+    color_hex
+FROM public.pop_urban_classified
+GROUP BY urban_class, color_hex
+ORDER BY avg_heat_weight DESC;
